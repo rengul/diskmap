@@ -24,6 +24,31 @@ Prima di farlo devono essere configurati certificato Developer ID,
 notarizzazione Apple e i rispettivi secret; questo evita di distribuire per
 errore le build di sviluppo firmate ad-hoc.
 
+## Prima notarizzazione locale
+
+Il primo invio ad Apple va eseguito in locale: conferma che il certificato
+Developer ID e la chiave API appartengano allo stesso team, senza esporre
+credenziali in GitHub. La chiave `.p8` non deve mai essere copiata nel progetto
+o salvata nel repository.
+
+```zsh
+cd /Users/renatogulinelli/Documents/Codex/2026-10-14/rie/outputs/daisydisk-cleanroom-scanner
+
+export SIGNING_IDENTITY='Developer ID Application: Renato Gulinelli (HU9QF2HFVB)'
+export NOTARY_KEY_PATH='/percorso/completo/AuthKey_XXXXXXXXXX.p8'
+export NOTARY_KEY_ID='XXXXXXXXXX'
+export NOTARY_ISSUER_ID='xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
+
+make notarize
+```
+
+Il comando ricostruisce l'app, la copia in una cartella temporanea pulita
+(necessario per evitare metadati Finder aggiunti a `Documents`), firma sia
+l'app sia lo scanner incluso con Hardened Runtime e timestamp, invia lo ZIP ad
+Apple attendendo l'esito, applica il ticket (`staple`) e verifica firma e
+Gatekeeper. Il file finale e pronto in `dist/` solo quando l'esito Apple e
+`Accepted`.
+
 ## Test locale del pacchetto
 
 ```sh

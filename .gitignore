@@ -10,3 +10,7 @@ xcuserdata/
 
 # Finder metadata
 .DS_Store
+
+# Apple notarization credentials (never commit these)
+*.p8
+*.p12

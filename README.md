@@ -9,7 +9,8 @@ behavioral requirements. It does not contain recovered DaisyDisk source code.
 make
 ```
 
-Requires macOS, Xcode Command Line Tools, and the Foundation framework.
+Requires macOS 13 or later, Xcode Command Line Tools, and the Foundation
+framework.
 
 ## Graphical app
 
