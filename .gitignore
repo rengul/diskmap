@@ -1,0 +1,12 @@
+# Build products and local release archives
+ddscan
+DiskMap.app/
+dist/
+
+# Xcode local state
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Finder metadata
+.DS_Store
