@@ -10,21 +10,56 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  build-notarize-and-release:
+    # The explicit switch prevents accidental publication until all repository
+    # secrets below have been configured.
+    if: ${{ vars.RELEASE_SIGNING_READY == 'true' }}
     runs-on: macos-14
+    env:
+      SIGNING_IDENTITY: ${{ vars.APP_SIGNING_IDENTITY }}
+      NOTARY_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+      NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+      P12_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_P12_BASE64 }}
+      P12_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_P12_PASSWORD }}
+      P8_BASE64: ${{ secrets.NOTARY_API_KEY_P8_BASE64 }}
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build the app
-        run: make ui
+      - name: Import Developer ID certificate
+        env:
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          test -n "$SIGNING_IDENTITY"
+          test -n "$P12_BASE64"
+          test -n "$P12_PASSWORD"
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          printf '%s' "$P12_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
-      - name: Package the release
-        run: ./distribution/package-release.sh
+      - name: Prepare App Store Connect API key
+        run: |
+          set -euo pipefail
+          test -n "$P8_BASE64"
+          test -n "$NOTARY_KEY_ID"
+          test -n "$NOTARY_ISSUER_ID"
+          export NOTARY_KEY_PATH="$RUNNER_TEMP/AuthKey_${NOTARY_KEY_ID}.p8"
+          printf '%s' "$P8_BASE64" | base64 --decode > "$NOTARY_KEY_PATH"
+          chmod 600 "$NOTARY_KEY_PATH"
+          echo "NOTARY_KEY_PATH=$NOTARY_KEY_PATH" >> "$GITHUB_ENV"
 
-      # Inserire qui la firma Developer ID e la notarizzazione prima della
-      # prima release pubblica. Non pubblichiamo build firmate ad-hoc.
+      - name: Build, sign, notarize, and verify
+        run: make notarize
+
       - name: Publish GitHub Release
-        if: ${{ vars.RELEASE_SIGNING_READY == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true

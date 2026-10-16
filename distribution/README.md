@@ -24,6 +24,31 @@ Prima di farlo devono essere configurati certificato Developer ID,
 notarizzazione Apple e i rispettivi secret; questo evita di distribuire per
 errore le build di sviluppo firmate ad-hoc.
 
+### Secret per GitHub Actions
+
+Nel repository `rengul/diskmap`, apri **Settings → Secrets and variables →
+Actions** e crea questi *repository secrets* (mai come variabili normali):
+
+- `DEVELOPER_ID_APPLICATION_P12_BASE64`: il contenuto Base64 dell'export
+  `.p12` del certificato **Developer ID Application** con la sua chiave privata.
+- `DEVELOPER_ID_APPLICATION_P12_PASSWORD`: la password scelta per quell'export.
+- `NOTARY_API_KEY_P8_BASE64`: il contenuto Base64 della chiave Apple `.p8`.
+- `NOTARY_API_KEY_ID`: il Key ID Apple.
+- `NOTARY_ISSUER_ID`: l'Issuer ID Apple.
+
+Crea inoltre le *repository variables*:
+
+- `APP_SIGNING_IDENTITY` = `Developer ID Application: Renato Gulinelli (HU9QF2HFVB)`
+- `RELEASE_SIGNING_READY` = `true` (solo dopo avere salvato tutti i secret).
+
+Per ottenere il Base64 senza salvare file aggiuntivi, esegui localmente (il
+risultato va incollato direttamente nel relativo secret):
+
+```zsh
+base64 -i /percorso/DeveloperID.p12 | tr -d '\n' | pbcopy
+base64 -i /percorso/AuthKey_XXXXXXXXXX.p8 | tr -d '\n' | pbcopy
+```
+
 ## Prima notarizzazione locale
 
 Il primo invio ad Apple va eseguito in locale: conferma che il certificato
