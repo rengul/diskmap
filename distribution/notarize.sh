@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="${0:A:h:h}"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :ShortVersion' "$ROOT/Version.plist")"
 APP="/private/tmp/DiskMap-signed.app"
+PACKAGE_APP="$ROOT/dist/DiskMap.app"
 ARCHIVE="$ROOT/dist/DiskMap-${VERSION}-macos.zip"
 
 for required in SIGNING_IDENTITY NOTARY_KEY_PATH NOTARY_KEY_ID NOTARY_ISSUER_ID; do
@@ -39,7 +40,10 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 spctl -a -vvv -t exec "$APP"
 
 # Re-create the downloadable archive only after stapling, so it contains the
-# offline validation ticket.
-ditto -c -k --keepParent "$APP" "$ARCHIVE"
+# offline validation ticket. Use the canonical product name inside the ZIP;
+# the signing staging path must never leak into the release package.
+rm -rf "$PACKAGE_APP"
+ditto --norsrc "$APP" "$PACKAGE_APP"
+ditto -c -k --keepParent "$PACKAGE_APP" "$ARCHIVE"
 (cd "$ROOT/dist" && shasum -a 256 "${ARCHIVE:t}" > "${ARCHIVE:t}.sha256")
 print "Build notarizzata pronta: $ARCHIVE"

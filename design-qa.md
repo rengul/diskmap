@@ -13,6 +13,27 @@ Reference: DaisyDisk directory list supplied by the user on 2026-10-15.
 
 Final result: passed.
 
+## Top navigation bar — 2026-10-17
+
+- Source visual truth: `/var/folders/48/11xyrqy16rqfh4kn5c227fw80000gn/T/TemporaryItems/NSIRD_screencaptureui_RWCs39/Screenshot 2026-10-17 alle 20.13.55.png`.
+- Implementation evidence: live Computer Use capture of `/Users/renatogulinelli/Projects/diskmap/DiskMap.app`, initial compact state and expanded `.git` navigation state.
+- Viewport: 820 × 160 points (compact) and 820 × 560 points (expanded), dark appearance.
+- Pixel dimensions and density: source 848 × 52 px; implementation captured at the native macOS window scale. Comparison was limited to the top navigation region because the source is a title-bar crop.
+- Full-view evidence: the former standalone Back button is absent from the folder-action row; Back, Forward, and the breadcrumb now form one continuous top strip without overlapping the source header or expanded result area.
+- Focused-region evidence: native chevron icons, disabled/enabled contrast, breadcrumb pills, spacing, truncation, and dark tokens were compared against the supplied crop.
+- Typography: system font, compact 12.5-point breadcrumb labels, medium weight, and tail truncation match the reference hierarchy.
+- Spacing and layout: navigation begins after the macOS window controls; 24-point history controls and a 28-point breadcrumb align on one center line.
+- Colors and tokens: the existing dark title-bar palette and blue current-location state remain consistent with the reference.
+- Image quality and assets: no raster assets are needed; Back and Forward use native SF Symbols rather than text glyphs or custom drawings.
+- Copy and content: node names are sourced from the real navigation path; accessibility descriptions and tooltips identify Back and Forward.
+- Interaction verification: navigated from `diskmap` into `.git`, then Back to `diskmap`, then Forward to `.git`; button enabled states and breadcrumb contents updated correctly at every step.
+- Build verification: `make ui` passed; ad-hoc signing and deep signature verification passed.
+- Findings: no actionable P0/P1/P2 differences in the requested navigation region.
+- Comparison history: first implementation pass passed; no P0/P1/P2 visual fix iteration was required.
+- Follow-up polish: none required for the requested scope.
+
+Final result: passed.
+
 ## Compact launch and animated results — 2026-10-16
 
 - Initial window shows only the source header, volume indicator, folder controls and breadcrumb at 820 × 160: passed with a live launch capture.

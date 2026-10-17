@@ -338,6 +338,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 @property(strong) NSTextField *volumeLabel;
 @property(strong) NSButton *scanButton;
 @property(strong) NSButton *backButton;
+@property(strong) NSButton *forwardButton;
 @property(strong) NSButton *cancelButton;
 @property(strong) NSButton *revealButton;
 @property(strong) ColorProgressView *progress;
@@ -356,6 +357,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 @property(strong) NSDictionary *rootNode;
 @property(strong) NSDictionary *currentNode;
 @property(strong) NSMutableArray<NSDictionary *> *history;
+@property(strong) NSMutableArray<NSDictionary *> *forwardHistory;
 @property(strong) NSMutableSet<NSString *> *missingPaths;
 @property(strong) dispatch_source_t directoryMonitor;
 @property(assign) unsigned long long volumeCapacityBytes;
@@ -607,6 +609,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     [self setupMainMenu];
     self.items = @[];
     self.history = [NSMutableArray array];
+    self.forwardHistory = [NSMutableArray array];
     self.missingPaths = [NSMutableSet set];
     NSRect visibleFrame = NSScreen.mainScreen.visibleFrame;
     CGFloat initialWidth = MIN(820.0, floor(NSWidth(visibleFrame) * 0.68));
@@ -640,11 +643,26 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     choose.translatesAutoresizingMaskIntoConstraints = NO;
     [choose setContentHuggingPriority:NSLayoutPriorityRequired
                        forOrientation:NSLayoutConstraintOrientationHorizontal];
-    self.backButton = [NSButton buttonWithTitle:@"‹" target:self action:@selector(goBack:)];
+    NSImage *backImage = [NSImage imageWithSystemSymbolName:@"chevron.left"
+                                  accessibilityDescription:@"Back"];
+    self.backButton = [NSButton buttonWithImage:backImage target:self action:@selector(goBack:)];
     self.backButton.translatesAutoresizingMaskIntoConstraints = NO;
     self.backButton.enabled = NO;
+    self.backButton.bordered = NO;
+    self.backButton.imagePosition = NSImageOnly;
+    self.backButton.toolTip = @"Back";
     [self.backButton setContentHuggingPriority:NSLayoutPriorityRequired
                                 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSImage *forwardImage = [NSImage imageWithSystemSymbolName:@"chevron.right"
+                                     accessibilityDescription:@"Forward"];
+    self.forwardButton = [NSButton buttonWithImage:forwardImage target:self action:@selector(goForward:)];
+    self.forwardButton.translatesAutoresizingMaskIntoConstraints = NO;
+    self.forwardButton.enabled = NO;
+    self.forwardButton.bordered = NO;
+    self.forwardButton.imagePosition = NSImageOnly;
+    self.forwardButton.toolTip = @"Forward";
+    [self.forwardButton setContentHuggingPriority:NSLayoutPriorityRequired
+                                   forOrientation:NSLayoutConstraintOrientationHorizontal];
     self.scanButton = [NSButton buttonWithTitle:@"Scan" target:self action:@selector(scan:)];
     self.scanButton.translatesAutoresizingMaskIntoConstraints = NO;
     self.scanButton.enabled = YES;
@@ -784,16 +802,21 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     scroll.borderType = NSNoBorder;
     scroll.translatesAutoresizingMaskIntoConstraints = NO;
 
-    for (NSView *view in @[self.backButton, choose, self.scanButton, self.cancelButton,
+    for (NSView *view in @[self.backButton, self.forwardButton, choose, self.scanButton, self.cancelButton,
                            self.pathLabel, self.sourceSubtitle,
                            self.sidebarTitle, self.sidebarSize,
                            self.progress, self.progressCaption, self.breadcrumb,
                            self.mapView, scroll, self.statusBar]) [content addSubview:view];
     [NSLayoutConstraint activateConstraints:@[
-        [self.backButton.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:20],
-        [self.backButton.widthAnchor constraintEqualToConstant:30],
-        [self.backButton.centerYAnchor constraintEqualToAnchor:choose.centerYAnchor],
-        [choose.leadingAnchor constraintEqualToAnchor:self.backButton.trailingAnchor constant:10],
+        [self.backButton.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:104],
+        [self.backButton.topAnchor constraintEqualToAnchor:content.topAnchor constant:9],
+        [self.backButton.widthAnchor constraintEqualToConstant:24],
+        [self.backButton.heightAnchor constraintEqualToConstant:24],
+        [self.forwardButton.leadingAnchor constraintEqualToAnchor:self.backButton.trailingAnchor constant:2],
+        [self.forwardButton.centerYAnchor constraintEqualToAnchor:self.backButton.centerYAnchor],
+        [self.forwardButton.widthAnchor constraintEqualToConstant:24],
+        [self.forwardButton.heightAnchor constraintEqualToConstant:24],
+        [choose.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:20],
         [choose.topAnchor constraintEqualToAnchor:self.sourceSubtitle.bottomAnchor constant:10],
         [self.scanButton.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-20],
         [self.scanButton.widthAnchor constraintEqualToConstant:62],
@@ -813,10 +836,10 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
         [self.progressCaption.leadingAnchor constraintEqualToAnchor:self.progress.leadingAnchor],
         [self.progressCaption.trailingAnchor constraintEqualToAnchor:self.progress.trailingAnchor],
         [self.progressCaption.topAnchor constraintEqualToAnchor:self.progress.bottomAnchor constant:4],
-        [self.breadcrumb.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:16],
-        [self.breadcrumb.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-16],
-        [self.breadcrumb.topAnchor constraintEqualToAnchor:choose.bottomAnchor constant:8],
-        [self.breadcrumb.heightAnchor constraintEqualToConstant:27]
+        [self.breadcrumb.leadingAnchor constraintEqualToAnchor:self.forwardButton.trailingAnchor constant:6],
+        [self.breadcrumb.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-12],
+        [self.breadcrumb.centerYAnchor constraintEqualToAnchor:self.backButton.centerYAnchor],
+        [self.breadcrumb.heightAnchor constraintEqualToConstant:28]
     ]];
     self.expandedResultConstraints = @[
         [self.statusBar.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
@@ -826,7 +849,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
         [self.scanStatsLabel.leadingAnchor constraintEqualToAnchor:self.statusBar.leadingAnchor constant:14],
         [self.scanStatsLabel.centerYAnchor constraintEqualToAnchor:self.statusBar.centerYAnchor],
         [self.mapView.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
-        [self.mapView.topAnchor constraintEqualToAnchor:self.breadcrumb.bottomAnchor constant:6],
+        [self.mapView.topAnchor constraintEqualToAnchor:choose.bottomAnchor constant:8],
         [self.mapView.bottomAnchor constraintEqualToAnchor:self.statusBar.topAnchor],
         [self.mapView.widthAnchor constraintEqualToAnchor:content.widthAnchor multiplier:0.60],
         [self.sidebarTitle.leadingAnchor constraintEqualToAnchor:self.mapView.trailingAnchor constant:26],
@@ -872,6 +895,10 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
         self.breadcrumb.nodes = @[@{@"name": self.pathLabel.stringValue,
                                    @"path": self.selectedPath}];
         [self.breadcrumb setNeedsDisplay:YES];
+        [self.history removeAllObjects];
+        [self.forwardHistory removeAllObjects];
+        self.backButton.enabled = NO;
+        self.forwardButton.enabled = NO;
         [self refreshVolumeIndicatorForPath:self.selectedPath];
         self.scanButton.enabled = YES;
     }
@@ -922,7 +949,10 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 
 - (void)displayNode:(NSDictionary *)node pushingHistory:(BOOL)push {
     if (!node) return;
-    if (push && self.currentNode) [self.history addObject:self.currentNode];
+    if (push && self.currentNode) {
+        [self.history addObject:self.currentNode];
+        [self.forwardHistory removeAllObjects];
+    }
     self.currentNode = node;
     self.items = node[@"children"] ?: @[];
     self.mapView.items = self.items;
@@ -931,6 +961,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     NSString *displayName = [self displayNameForNode:node];
     self.mapView.centerTitle = displayName;
     self.backButton.enabled = self.history.count > 0;
+    self.forwardButton.enabled = self.forwardHistory.count > 0;
     self.revealButton.enabled = node[@"path"] != nil;
     [self showDetailsForItem:node];
     [self.mapView setNeedsDisplay:YES];
@@ -957,6 +988,10 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     if (self.currentNode) [chain addObject:self.currentNode];
     if (index < 0 || index >= (NSInteger)chain.count - 1) return;
     NSDictionary *target = chain[index];
+    self.forwardHistory = [NSMutableArray array];
+    for (NSInteger next = (NSInteger)chain.count - 1; next > index; --next) {
+        [self.forwardHistory addObject:chain[next]];
+    }
     self.history = [[chain subarrayWithRange:NSMakeRange(0, index)] mutableCopy];
     [self displayNode:target pushingHistory:NO];
 }
@@ -1028,7 +1063,17 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     (void)sender;
     NSDictionary *node = self.history.lastObject;
     if (!node) return;
+    if (self.currentNode) [self.forwardHistory addObject:self.currentNode];
     [self.history removeLastObject];
+    [self displayNode:node pushingHistory:NO];
+}
+
+- (void)goForward:(id)sender {
+    (void)sender;
+    NSDictionary *node = self.forwardHistory.lastObject;
+    if (!node) return;
+    if (self.currentNode) [self.history addObject:self.currentNode];
+    [self.forwardHistory removeLastObject];
     [self displayNode:node pushingHistory:NO];
 }
 
@@ -1151,6 +1196,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
             self.rootNode = json[@"tree"];
             [self showVolumeSummary:json[@"volumeSummary"]];
             [self.history removeAllObjects];
+            [self.forwardHistory removeAllObjects];
             [self displayNode:self.rootNode pushingHistory:NO];
             [self expandResultAreaAnimated:YES];
             NSString *bytes = [NSByteCountFormatter stringFromByteCount:[json[@"physicalBytes"] longLongValue]
