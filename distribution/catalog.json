@@ -6,7 +6,7 @@
       "id": "net.rengul.diskmap",
       "name": "Disk Map",
       "summary": "Analizzatore locale dello spazio su disco per macOS.",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "minimumMacOS": "13.0",
       "release": {
         "url": "https://github.com/rengul/diskmap/releases/download/v0.1/DiskMap-0.1-macos.zip",
