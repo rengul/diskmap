@@ -420,6 +420,20 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     return version.length ? version : @"0.0";
 }
 
+- (void)showAboutPanel:(id)sender {
+    (void)sender;
+    NSString *website = @"https://launcher.renguldev.net";
+    NSMutableAttributedString *credits = [[NSMutableAttributedString alloc]
+        initWithString:website
+            attributes:@{
+                NSLinkAttributeName: [NSURL URLWithString:website],
+                NSForegroundColorAttributeName: NSColor.linkColor
+            }];
+    [NSApp orderFrontStandardAboutPanelWithOptions:@{
+        NSAboutPanelOptionCredits: credits
+    }];
+}
+
 - (void)setupMainMenu {
     NSMenu *mainMenu = [[NSMenu alloc] initWithTitle:@""];
 
@@ -427,9 +441,9 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
                                                              action:nil keyEquivalent:@""];
     NSMenu *applicationMenu = [[NSMenu alloc] initWithTitle:@"Disk Map"];
     NSMenuItem *about = [[NSMenuItem alloc] initWithTitle:@"About Disk Map"
-                                                   action:@selector(orderFrontStandardAboutPanel:)
+                                                   action:@selector(showAboutPanel:)
                                             keyEquivalent:@""];
-    about.target = NSApp;
+    about.target = self;
     [applicationMenu addItem:about];
     [applicationMenu addItem:NSMenuItem.separatorItem];
     [applicationMenu addItemWithTitle:@"Hide Disk Map" action:@selector(hide:) keyEquivalent:@"h"];
