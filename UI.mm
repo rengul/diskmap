@@ -16,6 +16,44 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
                       saturation:0.78 brightness:0.96 alpha:1];
 }
 
+@interface HoverTableView : NSTableView
+@property(assign) BOOL hoverSuppressed;
+@property(weak) NSClipView *observedClipView;
+@end
+
+@implementation HoverTableView
+- (void)viewDidMoveToSuperview {
+    if (self.observedClipView) {
+        [NSNotificationCenter.defaultCenter removeObserver:self
+                                                      name:NSViewBoundsDidChangeNotification
+                                                    object:self.observedClipView];
+    }
+    [super viewDidMoveToSuperview];
+    NSClipView *clipView = self.enclosingScrollView.contentView;
+    self.observedClipView = clipView;
+    clipView.postsBoundsChangedNotifications = YES;
+    if (clipView) {
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(clipViewDidScroll:)
+                                                   name:NSViewBoundsDidChangeNotification object:clipView];
+    }
+}
+- (void)clipViewDidScroll:(NSNotification *)notification {
+    (void)notification;
+    self.hoverSuppressed = YES;
+    [self setNeedsDisplay:YES];
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(restoreHover) object:nil];
+    [self performSelector:@selector(restoreHover) withObject:nil afterDelay:0.12];
+}
+- (void)restoreHover {
+    self.hoverSuppressed = NO;
+    [self setNeedsDisplay:YES];
+}
+- (void)dealloc {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self];
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+@end
+
 @interface HoverTableRowView : NSTableRowView
 @property(assign) BOOL mouseInside;
 @property(strong) NSTrackingArea *hoverTrackingArea;
@@ -45,7 +83,9 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 - (void)drawBackgroundInRect:(NSRect)dirtyRect {
     (void)dirtyRect;
     BOOL pointerIsInside = NO;
-    if (self.window && NSApp.isActive && self.window.isKeyWindow) {
+    HoverTableView *tableView = [self.superview isKindOfClass:HoverTableView.class]
+        ? (HoverTableView *)self.superview : nil;
+    if (!tableView.hoverSuppressed && self.window && NSApp.isActive && self.window.isKeyWindow) {
         NSPoint localPoint = [self convertPoint:self.window.mouseLocationOutsideOfEventStream fromView:nil];
         pointerIsInside = NSPointInRect(localPoint, self.bounds);
     }
@@ -93,6 +133,8 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 @property(assign) NSInteger selectedIndex;
 @property(strong) NSDictionary *selectedItem;
 @property(strong) NSMutableArray<NSDictionary *> *hitSegments;
+@property(strong) NSDictionary *hoveredItem;
+@property(strong) NSTrackingArea *mapTrackingArea;
 @property(weak) id actionTarget;
 @property(copy) NSString *centerTitle;
 @property(copy) NSString *centerSubtitle;
@@ -100,6 +142,16 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 
 @implementation DiskMapView
 - (BOOL)isFlipped { return YES; }
+
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (self.mapTrackingArea) [self removeTrackingArea:self.mapTrackingArea];
+    self.mapTrackingArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect
+        options:NSTrackingMouseMoved | NSTrackingMouseEnteredAndExited |
+                NSTrackingActiveInActiveApp | NSTrackingInVisibleRect
+          owner:self userInfo:nil];
+    [self addTrackingArea:self.mapTrackingArea];
+}
 
 - (NSBezierPath *)wedgeAtCenter:(NSPoint)center inner:(CGFloat)inner outer:(CGFloat)outer
                            start:(CGFloat)start sweep:(CGFloat)sweep {
@@ -135,9 +187,9 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
                           brightness:brightness alpha:1];
         [fill setFill];
         [wedge fill];
-        if ([item isEqual:self.selectedItem]) {
+        if ([item isEqual:self.selectedItem] || [item isEqual:self.hoveredItem]) {
             [NSColor.whiteColor setStroke];
-            wedge.lineWidth = 3;
+            wedge.lineWidth = [item isEqual:self.selectedItem] ? 3 : 2;
             [wedge stroke];
         }
         [self.hitSegments addObject:@{@"item": item, @"path": wedge}];
@@ -196,6 +248,29 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     SEL action = event.clickCount > 1 ? @selector(openSelectedMapItem:) : @selector(selectMapItem:);
     [NSApp sendAction:action to:self.actionTarget from:self];
 }
+
+- (void)mouseMoved:(NSEvent *)event {
+    NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+    NSDictionary *item = nil;
+    for (NSDictionary *segment in self.hitSegments.reverseObjectEnumerator) {
+        if ([segment[@"path"] containsPoint:point]) {
+            item = segment[@"item"];
+            break;
+        }
+    }
+    if (item == self.hoveredItem) return;
+    self.hoveredItem = item;
+    [self setNeedsDisplay:YES];
+    [NSApp sendAction:@selector(hoverMapItem:) to:self.actionTarget from:self];
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    (void)event;
+    if (!self.hoveredItem) return;
+    self.hoveredItem = nil;
+    [self setNeedsDisplay:YES];
+    [NSApp sendAction:@selector(hoverMapItem:) to:self.actionTarget from:self];
+}
 @end
 
 @interface ColorProgressView : NSView
@@ -231,6 +306,69 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
         [(self.fillColor ?: NSColor.systemBlueColor) setFill];
         [[NSBezierPath bezierPathWithRoundedRect:fill xRadius:2 yRadius:2] fill];
     }
+}
+@end
+
+@interface DockProgressView : NSView
+@property(strong) NSImage *applicationIcon;
+@property(nonatomic, assign) double progressValue;
+@end
+
+@implementation DockProgressView
+- (BOOL)isOpaque { return NO; }
+- (void)setProgressValue:(double)value {
+    _progressValue = MIN(1.0, MAX(0.0, value));
+    [self setNeedsDisplay:YES];
+}
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    [self.applicationIcon drawInRect:self.bounds fromRect:NSZeroRect
+                           operation:NSCompositingOperationSourceOver fraction:1.0];
+
+    CGFloat side = MIN(NSWidth(self.bounds), NSHeight(self.bounds));
+    CGFloat radius = side * 0.245;
+    NSPoint center = NSMakePoint(NSMaxX(self.bounds) - radius - side * 0.055,
+                                 NSMinY(self.bounds) + radius + side * 0.055);
+    NSRect badgeRect = NSMakeRect(center.x - radius, center.y - radius,
+                                  radius * 2, radius * 2);
+    NSBezierPath *badge = [NSBezierPath bezierPathWithOvalInRect:badgeRect];
+    [[NSColor colorWithRed:0.075 green:0.082 blue:0.096 alpha:0.96] setFill];
+    [badge fill];
+    [[NSColor colorWithWhite:0.72 alpha:0.85] setStroke];
+    badge.lineWidth = MAX(1.0, side * 0.012);
+    [badge stroke];
+
+    CGFloat ringInset = side * 0.045;
+    NSRect ringRect = NSInsetRect(badgeRect, ringInset, ringInset);
+    NSBezierPath *track = [NSBezierPath bezierPathWithOvalInRect:ringRect];
+    [[NSColor colorWithWhite:0.25 alpha:0.95] setStroke];
+    track.lineWidth = MAX(2.0, side * 0.038);
+    [track stroke];
+
+    if (self.progressValue > 0) {
+        NSBezierPath *arc = [NSBezierPath bezierPath];
+        [arc appendBezierPathWithArcWithCenter:center radius:NSWidth(ringRect) / 2.0
+                                    startAngle:90 endAngle:90 - self.progressValue * 360
+                                     clockwise:YES];
+        [[NSColor colorWithRed:0.30 green:0.56 blue:0.98 alpha:1] setStroke];
+        arc.lineWidth = track.lineWidth;
+        arc.lineCapStyle = NSLineCapStyleRound;
+        [arc stroke];
+    }
+
+    NSString *percentage = [NSString stringWithFormat:@"%.0f", self.progressValue * 100];
+    NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
+    paragraph.alignment = NSTextAlignmentCenter;
+    NSDictionary *attributes = @{
+        NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:side * 0.16
+                                                              weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName: NSColor.whiteColor,
+        NSParagraphStyleAttributeName: paragraph
+    };
+    NSSize textSize = [percentage sizeWithAttributes:attributes];
+    NSRect textRect = NSMakeRect(NSMinX(badgeRect), center.y - textSize.height / 2.0,
+                                 NSWidth(badgeRect), textSize.height + 2);
+    [percentage drawInRect:textRect withAttributes:attributes];
 }
 @end
 
@@ -345,6 +483,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 @property(strong) NSTextField *progressCaption;
 @property(strong) NSTask *scanTask;
 @property(strong) DiskMapView *mapView;
+@property(strong) DockProgressView *dockProgressView;
 @property(strong) NSTableView *table;
 @property(strong) NSScrollView *resultsScroll;
 @property(strong) NSTextField *sidebarTitle;
@@ -354,6 +493,11 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 @property(strong) NSTextField *scanStatsLabel;
 @property(copy) NSString *selectedPath;
 @property(copy) NSArray<NSDictionary *> *items;
+@property(copy) NSArray<NSDictionary *> *listedItems;
+@property(copy) NSArray<NSDictionary *> *visibleItems;
+@property(copy) NSArray<NSDictionary *> *collapsedSmallItems;
+@property(assign) BOOL smallItemsExpanded;
+@property(assign) unsigned long long listedItemsTotalBytes;
 @property(strong) NSDictionary *rootNode;
 @property(strong) NSDictionary *currentNode;
 @property(strong) NSMutableArray<NSDictionary *> *history;
@@ -775,10 +919,11 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     self.mapView.selectedIndex = NSNotFound;
     self.mapView.actionTarget = self;
     self.mapView.translatesAutoresizingMaskIntoConstraints = NO;
-    self.table = [[NSTableView alloc] init];
+    self.table = [[HoverTableView alloc] init];
     self.table.dataSource = self;
     self.table.delegate = self;
     self.table.target = self;
+    self.table.action = @selector(tableClicked:);
     self.table.doubleAction = @selector(openSelectedTableItem:);
     self.table.headerView = nil;
     self.table.backgroundColor = NSColor.clearColor;
@@ -961,6 +1106,40 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     return name.length ? name : @"Disk Map";
 }
 
+- (void)rebuildVisibleItems {
+    if (self.smallItemsExpanded || self.listedItems.count < 3) {
+        self.visibleItems = self.listedItems;
+        self.collapsedSmallItems = @[];
+        return;
+    }
+
+    unsigned long long total = self.listedItemsTotalBytes;
+    unsigned long long cutoff = MAX(1ULL, total / 100ULL);
+    NSInteger firstSmallIndex = self.listedItems.count;
+    unsigned long long collapsedBytes = 0;
+    for (NSInteger index = (NSInteger)self.listedItems.count - 1; index >= 1; --index) {
+        unsigned long long itemBytes = [self.listedItems[index][@"physicalBytes"] unsignedLongLongValue];
+        if (itemBytes > cutoff - collapsedBytes) break;
+        collapsedBytes += itemBytes;
+        firstSmallIndex = index;
+    }
+    NSInteger smallCount = (NSInteger)self.listedItems.count - firstSmallIndex;
+    if (smallCount < 2) {
+        self.visibleItems = self.listedItems;
+        self.collapsedSmallItems = @[];
+        return;
+    }
+
+    self.collapsedSmallItems = [self.listedItems subarrayWithRange:NSMakeRange(firstSmallIndex, smallCount)];
+    NSDictionary *summary = @{@"name": @"smaller objects…",
+                              @"physicalBytes": @(collapsedBytes),
+                              @"smallItemsSummary": @YES};
+    NSMutableArray<NSDictionary *> *visible = [[self.listedItems subarrayWithRange:
+        NSMakeRange(0, firstSmallIndex)] mutableCopy];
+    [visible addObject:summary];
+    self.visibleItems = visible;
+}
+
 - (void)displayNode:(NSDictionary *)node pushingHistory:(BOOL)push {
     if (!node) return;
     if (push && self.currentNode) {
@@ -969,6 +1148,10 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     }
     self.currentNode = node;
     self.items = node[@"children"] ?: @[];
+    self.listedItems = self.items;
+    self.listedItemsTotalBytes = [node[@"physicalBytes"] unsignedLongLongValue];
+    self.smallItemsExpanded = NO;
+    [self rebuildVisibleItems];
     self.mapView.items = self.items;
     self.mapView.selectedIndex = NSNotFound;
     self.mapView.selectedItem = nil;
@@ -994,6 +1177,30 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     [self.breadcrumb setNeedsDisplay:YES];
     self.statusLabel.stringValue = [NSString stringWithFormat:@"%@ — %lu items", bytes,
                                     (unsigned long)self.items.count];
+}
+
+- (void)showListForNode:(NSDictionary *)node preview:(BOOL)preview {
+    if (!node) node = self.currentNode;
+    NSArray<NSDictionary *> *children = node[@"children"];
+    BOOL hasChildren = [children isKindOfClass:NSArray.class] && children.count > 0;
+    self.listedItems = hasChildren ? children : (preview ? @[node] : self.items);
+    self.listedItemsTotalBytes = [node[@"physicalBytes"] unsignedLongLongValue];
+    self.smallItemsExpanded = NO;
+    [self rebuildVisibleItems];
+    [self.table reloadData];
+    [self.table deselectAll:nil];
+
+    NSString *displayName = [self displayNameForNode:node];
+    NSString *bytes = [NSByteCountFormatter stringFromByteCount:
+        [node[@"physicalBytes"] longLongValue] countStyle:NSByteCountFormatterCountStyleFile];
+    self.sidebarTitle.stringValue = displayName;
+    self.sidebarSize.stringValue = [NSString stringWithFormat:@"%@  ·  %lu items", bytes,
+                                    (unsigned long)self.listedItems.count];
+}
+
+- (void)hoverMapItem:(DiskMapView *)sender {
+    [self showListForNode:(sender.hoveredItem ?: self.currentNode)
+                  preview:sender.hoveredItem != nil];
 }
 
 - (void)breadcrumbSelected:(NSNumber *)sender {
@@ -1044,7 +1251,10 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 
 - (NSDictionary *)selectedItemOrCurrentNode {
     NSInteger row = self.table.selectedRow;
-    if (row >= 0 && row < (NSInteger)self.items.count) return self.items[row];
+    if (row >= 0 && row < (NSInteger)self.visibleItems.count) {
+        NSDictionary *item = self.visibleItems[row];
+        if (![item[@"smallItemsSummary"] boolValue]) return item;
+    }
     return self.mapView.selectedItem ?: self.currentNode;
 }
 
@@ -1095,7 +1305,13 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     (void)sender;
     NSDictionary *item = self.mapView.selectedItem;
     if (!item) return;
-    NSInteger index = [self.items indexOfObjectIdenticalTo:item];
+    NSInteger index = [self.visibleItems indexOfObjectIdenticalTo:item];
+    if (index == NSNotFound && [self.collapsedSmallItems containsObject:item]) {
+        self.smallItemsExpanded = YES;
+        [self rebuildVisibleItems];
+        [self.table reloadData];
+        index = [self.visibleItems indexOfObjectIdenticalTo:item];
+    }
     if (index != NSNotFound) {
         [self.table selectRowIndexes:[NSIndexSet indexSetWithIndex:index] byExtendingSelection:NO];
         [self.table scrollRowToVisible:index];
@@ -1117,7 +1333,38 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     (void)sender;
     NSInteger row = self.table.clickedRow;
     if (row < 0) row = self.table.selectedRow;
-    if (row >= 0 && row < (NSInteger)self.items.count) [self openItem:self.items[row]];
+    if (row >= 0 && row < (NSInteger)self.visibleItems.count) {
+        NSDictionary *item = self.visibleItems[row];
+        if (![item[@"smallItemsSummary"] boolValue]) [self openItem:item];
+    }
+}
+
+- (void)tableClicked:(id)sender {
+    (void)sender;
+    NSInteger row = self.table.clickedRow;
+    if (row < 0 || row >= (NSInteger)self.visibleItems.count) return;
+    if (![self.visibleItems[row][@"smallItemsSummary"] boolValue]) return;
+    self.smallItemsExpanded = YES;
+    [self rebuildVisibleItems];
+    [self.table reloadData];
+    [self.table deselectAll:nil];
+}
+
+- (void)showDockProgress:(double)progressValue {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                             selector:@selector(hideDockProgress) object:nil];
+    if (!self.dockProgressView) {
+        self.dockProgressView = [[DockProgressView alloc] initWithFrame:NSMakeRect(0, 0, 128, 128)];
+        self.dockProgressView.applicationIcon = [NSApp.applicationIconImage copy];
+    }
+    self.dockProgressView.progressValue = progressValue;
+    NSApp.dockTile.contentView = self.dockProgressView;
+    [NSApp.dockTile display];
+}
+
+- (void)hideDockProgress {
+    NSApp.dockTile.contentView = nil;
+    [NSApp.dockTile display];
 }
 
 - (void)scan:(id)sender {
@@ -1137,6 +1384,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     self.scanStatsLabel.stringValue = @"0 files   •   0 folders   •   preparing…";
     self.sourceSubtitle.stringValue = @"Scanning startup volume…";
     self.statusLabel.stringValue = @"Preparing scan…";
+    [self showDockProgress:0];
     [self.progress startAnimation:nil];
     NSString *tool = [[NSBundle mainBundle] pathForResource:@"ddscan" ofType:nil];
     NSTask *task = [[NSTask alloc] init];
@@ -1182,6 +1430,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
                         // end of the scan because workers can still be draining pending folders and
                         // the final tree/JSON still has to be assembled.
                         self.progress.doubleValue = MIN(self.progress.maxValue * 0.90, scannedBytes);
+                        [self showDockProgress:self.progress.doubleValue / self.progress.maxValue];
                     }
                 }
             }
@@ -1201,6 +1450,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
             self.cancelButton.hidden = YES;
             self.scanTask = nil;
             if (!json) {
+                [self hideDockProgress];
                 self.sourceSubtitle.stringValue = @"Scan failed";
                 self.statusLabel.stringValue = error.localizedDescription ?: @"Scan failed";
                 self.progressCaption.stringValue = @"Scan failed";
@@ -1225,6 +1475,8 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
                     completion, json[@"files"], bytes];
             self.sourceSubtitle.stringValue = [NSString stringWithFormat:@"Scan complete • %@ items", json[@"files"]];
             self.progress.doubleValue = self.progress.maxValue;
+            [self showDockProgress:1.0];
+            [self performSelector:@selector(hideDockProgress) withObject:nil afterDelay:0.45];
             self.progressCaption.stringValue = @"Scan complete";
             self.progressCaption.textColor = NSColor.systemBlueColor;
             self.scanStatsLabel.stringValue = [NSString stringWithFormat:
@@ -1239,6 +1491,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
         self.scanButton.hidden = NO;
         self.cancelButton.hidden = YES;
         self.scanTask = nil;
+        [self hideDockProgress];
         [self refreshVolumeIndicatorForPath:self.selectedPath];
         self.scanStatsLabel.stringValue = @"0 files   •   0 folders   •   scan failed";
         self.statusLabel.stringValue = launchError.localizedDescription;
@@ -1258,13 +1511,16 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 - (void)tableViewSelectionDidChange:(NSNotification *)notification {
     (void)notification;
     self.mapView.selectedIndex = self.table.selectedRow;
-    self.mapView.selectedItem = self.table.selectedRow >= 0 ? self.items[self.table.selectedRow] : nil;
+    NSDictionary *selected = self.table.selectedRow >= 0 &&
+        self.table.selectedRow < (NSInteger)self.visibleItems.count
+        ? self.visibleItems[self.table.selectedRow] : nil;
+    self.mapView.selectedItem = [selected[@"smallItemsSummary"] boolValue] ? nil : selected;
     if (self.mapView.selectedItem) [self showDetailsForItem:self.mapView.selectedItem];
     [self.mapView setNeedsDisplay:YES];
 }
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
-    (void)tableView; return self.items.count;
+    (void)tableView; return self.visibleItems.count;
 }
 - (NSTableRowView *)tableView:(NSTableView *)tableView rowViewForRow:(NSInteger)row {
     (void)tableView; (void)row;
@@ -1272,7 +1528,8 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 }
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
     NSString *identifier = column.identifier;
-    NSDictionary *item = self.items[row];
+    NSDictionary *item = self.visibleItems[row];
+    BOOL summary = [item[@"smallItemsSummary"] boolValue];
     BOOL missing = [self.missingPaths containsObject:item[@"path"] ?: @""];
     NSString *size = [NSByteCountFormatter stringFromByteCount:[item[@"physicalBytes"] longLongValue]
                                                      countStyle:NSByteCountFormatterCountStyleFile];
@@ -1289,8 +1546,9 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
         }
         cell.alignment = NSTextAlignmentRight;
         cell.font = [NSFont monospacedDigitSystemFontOfSize:15 weight:NSFontWeightRegular];
-        NSColor *sizeColor = missing ? [NSColor colorWithWhite:0.48 alpha:1]
-                                     : [NSColor colorWithWhite:0.86 alpha:1];
+        NSColor *sizeColor = summary ? [NSColor colorWithWhite:0.48 alpha:1]
+            : (missing ? [NSColor colorWithWhite:0.48 alpha:1]
+                       : [NSColor colorWithWhite:0.86 alpha:1]);
         NSDictionary *attributes = missing
             ? @{NSForegroundColorAttributeName: sizeColor,
                 NSStrikethroughStyleAttributeName: @(NSUnderlineStyleSingle)}
@@ -1305,11 +1563,13 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
         cell = [[DirectoryNameCell alloc] initWithFrame:NSZeroRect];
         cell.identifier = identifier;
     }
-    NSColor *nameColor = missing ? [NSColor colorWithWhite:0.52 alpha:1]
-        : (restricted ? NSColor.systemOrangeColor : [NSColor colorWithWhite:0.91 alpha:1]);
+    NSColor *nameColor = summary ? [NSColor colorWithWhite:0.40 alpha:1]
+        : (missing ? [NSColor colorWithWhite:0.52 alpha:1]
+        : (restricted ? NSColor.systemOrangeColor : [NSColor colorWithWhite:0.91 alpha:1]));
     NSMutableAttributedString *label = [[NSMutableAttributedString alloc]
         initWithString:@"●  " attributes:@{
-            NSForegroundColorAttributeName: DiskMapRootColor(item, row),
+            NSForegroundColorAttributeName: summary
+                ? [NSColor colorWithWhite:0.24 alpha:1] : DiskMapRootColor(item, row),
             NSFontAttributeName: [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold]
         }];
     NSUInteger nameStart = label.length;
