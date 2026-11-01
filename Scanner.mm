@@ -339,8 +339,12 @@ public:
 
     bool scan() {
         struct stat rootStat {};
-        if (lstat(root_.c_str(), &rootStat) != 0 || !S_ISDIR(rootStat.st_mode)) {
+        if (lstat(root_.c_str(), &rootStat) != 0) {
             addError(root_, errno);
+            return false;
+        }
+        if (!S_ISDIR(rootStat.st_mode)) {
+            addError(root_, ENOTDIR);
             return false;
         }
         rootDevice_ = rootStat.st_dev;
@@ -401,13 +405,13 @@ public:
             @"logicalBytes": @(totals_.logicalBytes),
             @"physicalBytes": @(totals_.physicalBytes),
             @"cancelled": @(scanCancelled_),
-            @"completed": @(!scanCancelled_),
+            @"completed": @(rootNode_ != nullptr && !scanCancelled_),
             @"errors": errors
         };
     }
 
     NSDictionary *treeResult() {
-        return dictionaryForNode(rootNode_);
+        return rootNode_ ? dictionaryForNode(rootNode_) : nil;
     }
 
 private:
@@ -815,8 +819,11 @@ int main(int argc, const char *argv[]) {
             fprintf(stderr, "JSON serialization failed: %s\n", error.localizedDescription.UTF8String);
             return 1;
         }
-        fwrite(json.bytes, 1, json.length, stdout);
-        fputc('\n', stdout);
+        if (fwrite(json.bytes, 1, json.length, stdout) != json.length ||
+            fputc('\n', stdout) == EOF || fflush(stdout) == EOF) {
+            fprintf(stderr, "Cannot write scan results: %s\n", strerror(errno));
+            return 1;
+        }
         return success ? 0 : 1;
     }
 }

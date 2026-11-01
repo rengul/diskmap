@@ -504,6 +504,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 @property(strong) NSMutableArray<NSDictionary *> *forwardHistory;
 @property(strong) NSMutableSet<NSString *> *missingPaths;
 @property(strong) dispatch_source_t directoryMonitor;
+@property(strong) NSTimer *volumeRefreshTimer;
 @property(assign) unsigned long long volumeCapacityBytes;
 @property(assign) unsigned long long volumeFreeBytes;
 @property(copy) NSArray<NSLayoutConstraint *> *expandedResultConstraints;
@@ -713,6 +714,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
     (void)notification;
+    [self.volumeRefreshTimer invalidate];
     [self stopDirectoryMonitor];
 }
 
@@ -1047,6 +1049,8 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     panel.canChooseFiles = NO;
     panel.allowsMultipleSelection = NO;
     if ([panel runModal] == NSModalResponseOK) {
+        [self.volumeRefreshTimer invalidate];
+        self.volumeRefreshTimer = nil;
         self.selectedPath = panel.URL.path;
         self.pathLabel.stringValue = panel.URL.lastPathComponent.length
             ? panel.URL.lastPathComponent : self.selectedPath;
@@ -1064,6 +1068,10 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 }
 
 - (void)refreshVolumeIndicatorForPath:(NSString *)path {
+    [self refreshVolumeIndicatorForPath:path updateSubtitle:YES];
+}
+
+- (void)refreshVolumeIndicatorForPath:(NSString *)path updateSubtitle:(BOOL)updateSubtitle {
     NSError *error = nil;
     NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfFileSystemForPath:path error:&error];
     if (!attributes || error) {
@@ -1071,7 +1079,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
         self.progress.doubleValue = 0;
         self.progressCaption.stringValue = @"Space unavailable";
         self.progressCaption.textColor = NSColor.secondaryLabelColor;
-        self.sourceSubtitle.stringValue = @"Disk space unavailable";
+        if (updateSubtitle) self.sourceSubtitle.stringValue = @"Disk space unavailable";
         return;
     }
     self.volumeCapacityBytes = [attributes[NSFileSystemSize] unsignedLongLongValue];
@@ -1089,7 +1097,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
                                                             countStyle:NSByteCountFormatterCountStyleFile];
     self.progressCaption.stringValue = [NSString stringWithFormat:@"%@ available", freeText];
     self.progressCaption.textColor = occupancyColor;
-    self.sourceSubtitle.stringValue = [NSString stringWithFormat:@"Capacity %@ • ready to scan", capacityText];
+    if (updateSubtitle) self.sourceSubtitle.stringValue = [NSString stringWithFormat:@"Capacity %@ • ready to scan", capacityText];
 }
 
 - (NSString *)displayNameForNode:(NSDictionary *)node {
@@ -1370,6 +1378,8 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 - (void)scan:(id)sender {
     (void)sender;
     if (!self.selectedPath) return;
+    [self.volumeRefreshTimer invalidate];
+    self.volumeRefreshTimer = nil;
     self.scanButton.enabled = NO;
     self.scanButton.hidden = YES;
     self.cancelButton.hidden = NO;
@@ -1400,15 +1410,17 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     NSPipe *progressPipe = [NSPipe pipe];
     task.standardError = progressPipe;
     NSFileHandle *progressReader = progressPipe.fileHandleForReading;
+    NSMutableData *diagnostics = [NSMutableData data];
     progressReader.readabilityHandler = ^(NSFileHandle *handle) {
         NSData *chunk = handle.availableData;
         if (chunk.length == 0) { handle.readabilityHandler = nil; return; }
+        @synchronized (diagnostics) { [diagnostics appendData:chunk]; }
         NSString *text = [[NSString alloc] initWithData:chunk encoding:NSUTF8StringEncoding];
         NSArray<NSString *> *updates = [text componentsSeparatedByCharactersInSet:
                                          [NSCharacterSet characterSetWithCharactersInString:@"\r\n"]];
         NSString *latest = nil;
         for (NSString *candidate in updates) if (candidate.length > 0) latest = candidate;
-        if (latest) dispatch_async(dispatch_get_main_queue(), ^{
+        if (latest && [latest containsString:@"files="]) dispatch_async(dispatch_get_main_queue(), ^{
             if (self.scanTask == task) {
                 self.sourceSubtitle.stringValue = @"Scanning…";
                 NSMutableDictionary<NSString *, NSString *> *values = [NSMutableDictionary dictionary];
@@ -1438,6 +1450,8 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     };
     task.terminationHandler = ^(NSTask *finished) {
         progressReader.readabilityHandler = nil;
+        NSData *remaining = [progressReader readDataToEndOfFile];
+        @synchronized (diagnostics) { [diagnostics appendData:remaining]; }
         [outputFile closeFile];
         NSData *data = [NSData dataWithContentsOfFile:temporaryPath];
         [[NSFileManager defaultManager] removeItemAtPath:temporaryPath error:nil];
@@ -1449,12 +1463,37 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
             self.scanButton.hidden = NO;
             self.cancelButton.hidden = YES;
             self.scanTask = nil;
-            if (!json) {
+            if (![json isKindOfClass:NSDictionary.class] || ![json[@"tree"] isKindOfClass:NSDictionary.class]) {
                 [self hideDockProgress];
+                NSString *stderrText;
+                @synchronized (diagnostics) {
+                    stderrText = [[NSString alloc] initWithData:diagnostics encoding:NSUTF8StringEncoding];
+                }
+                NSMutableArray<NSString *> *messages = [NSMutableArray array];
+                for (NSString *line in [stderrText componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+                    NSString *trimmed = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                    if (trimmed.length && ![trimmed hasPrefix:@"files="]) [messages addObject:trimmed];
+                }
+                NSArray *scanErrors = [json isKindOfClass:NSDictionary.class] ? json[@"errors"] : nil;
+                NSDictionary *firstError = [scanErrors isKindOfClass:NSArray.class] ? scanErrors.firstObject : nil;
+                NSString *detail = messages.count ? [messages componentsJoinedByString:@"\n"] :
+                    (firstError[@"message"] ?: error.localizedDescription);
+                if (!messages.count && !firstError && error && finished.terminationStatus != 0) {
+                    detail = [NSString stringWithFormat:@"%@\nScanner exited with %@ %d.", detail,
+                        finished.terminationReason == NSTaskTerminationReasonUncaughtSignal ? @"signal" : @"status",
+                        finished.terminationStatus];
+                }
+                if (!detail.length) detail = [NSString stringWithFormat:@"Scanner exited with status %d%@.",
+                    finished.terminationStatus, finished.terminationReason == NSTaskTerminationReasonUncaughtSignal ? @" (signal)" : @""];
                 self.sourceSubtitle.stringValue = @"Scan failed";
-                self.statusLabel.stringValue = error.localizedDescription ?: @"Scan failed";
+                self.statusLabel.stringValue = detail;
+                self.scanStatsLabel.stringValue = @"Scan failed";
                 self.progressCaption.stringValue = @"Scan failed";
                 self.progressCaption.textColor = NSColor.systemRedColor;
+                NSAlert *alert = [[NSAlert alloc] init];
+                alert.messageText = @"Scan failed";
+                alert.informativeText = detail;
+                [alert beginSheetModalForWindow:self.window completionHandler:nil];
                 return;
             }
             self.rootNode = json[@"tree"];
@@ -1474,11 +1513,15 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
                 : [NSString stringWithFormat:@"%@ — %@ items — %@",
                     completion, json[@"files"], bytes];
             self.sourceSubtitle.stringValue = [NSString stringWithFormat:@"Scan complete • %@ items", json[@"files"]];
-            self.progress.doubleValue = self.progress.maxValue;
             [self showDockProgress:1.0];
             [self performSelector:@selector(hideDockProgress) withObject:nil afterDelay:0.45];
-            self.progressCaption.stringValue = @"Scan complete";
-            self.progressCaption.textColor = NSColor.systemBlueColor;
+            [self refreshVolumeIndicatorForPath:self.selectedPath updateSubtitle:NO];
+            __weak AppDelegate *weakSelf = self;
+            self.volumeRefreshTimer = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer *timer) {
+                (void)timer;
+                AppDelegate *strongSelf = weakSelf;
+                if (strongSelf) [strongSelf refreshVolumeIndicatorForPath:strongSelf.selectedPath updateSubtitle:NO];
+            }];
             self.scanStatsLabel.stringValue = [NSString stringWithFormat:
                 @"%@ files   •   %@ folders   •   scan complete",
                 json[@"files"] ?: @"0", json[@"directories"] ?: @"0"];
@@ -1495,6 +1538,12 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
         [self refreshVolumeIndicatorForPath:self.selectedPath];
         self.scanStatsLabel.stringValue = @"0 files   •   0 folders   •   scan failed";
         self.statusLabel.stringValue = launchError.localizedDescription;
+        self.progressCaption.stringValue = @"Scan failed";
+        self.progressCaption.textColor = NSColor.systemRedColor;
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"Could not start scan";
+        alert.informativeText = launchError.localizedDescription ?: @"The scanner could not be started.";
+        [alert beginSheetModalForWindow:self.window completionHandler:nil];
     }
 }
 
