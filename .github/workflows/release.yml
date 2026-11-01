@@ -14,7 +14,7 @@ jobs:
     # The explicit switch prevents accidental publication until all repository
     # secrets below have been configured.
     if: ${{ vars.RELEASE_SIGNING_READY == 'true' }}
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       SIGNING_IDENTITY: ${{ vars.APP_SIGNING_IDENTITY }}
       NOTARY_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
