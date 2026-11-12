@@ -54,7 +54,7 @@ queued. Live file, folder and pending counts appear in the bottom status bar.
 Click a row or radial segment to select it. Double-click a directory row or
 segment to make it the current directory. The compact top navigation bar keeps
 **Back**, **Forward**, and the clickable breadcrumb together, with disabled
-states when no history is available. The radial map renders up to four hierarchy levels at once; nested
+states when no history is available. The radial map renders up to twelve hierarchy levels at once, with narrower outer rings; nested
 segments remain selectable and navigable. Files are selectable but are not
 treated as navigable containers.
 

@@ -643,6 +643,7 @@ private:
             totals_.physicalBytes += hiddenSpaceBytes_;
             std::sort(rootNode_->children.begin(), rootNode_->children.end(),
                       [](const auto &left, const auto &right) {
+                          if (left->hiddenSpace != right->hiddenSpace) return !left->hiddenSpace;
                           if (left->physicalBytes != right->physicalBytes)
                               return left->physicalBytes > right->physicalBytes;
                           return left->name < right->name;

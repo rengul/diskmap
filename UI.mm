@@ -3,7 +3,9 @@
 #include <signal.h>
 #include <unistd.h>
 
-static const CGFloat DiskMapPalette[] = {0.15, 0.08, 0.78, 0.51, 0.94, 0.30, 0.60};
+static NSPasteboardType const DiskMapDragType = @"com.diskmap.item-path";
+
+static const CGFloat DiskMapPalette[] = {0.27, 0.58, 0.70, 0.78, 0.84, 0.90, 0.94};
 
 static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     if ([item[@"hiddenSpace"] boolValue]) {
@@ -19,6 +21,8 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 @interface HoverTableView : NSTableView
 @property(assign) BOOL hoverSuppressed;
 @property(weak) NSClipView *observedClipView;
+@property(weak) id hoverTarget;
+@property(weak) NSTableRowView *hoveredRowView;
 @end
 
 @implementation HoverTableView
@@ -40,6 +44,8 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 - (void)clipViewDidScroll:(NSNotification *)notification {
     (void)notification;
     self.hoverSuppressed = YES;
+    self.hoveredRowView = nil;
+    [NSApp sendAction:@selector(hoverTableRow:) to:self.hoverTarget from:self];
     [self setNeedsDisplay:YES];
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(restoreHover) object:nil];
     [self performSelector:@selector(restoreHover) withObject:nil afterDelay:0.12];
@@ -73,8 +79,20 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
                                                           options:options owner:self userInfo:nil];
     [self addTrackingArea:self.hoverTrackingArea];
 }
-- (void)mouseEntered:(NSEvent *)event { (void)event; self.mouseInside = YES; [self setNeedsDisplay:YES]; }
-- (void)mouseExited:(NSEvent *)event { (void)event; self.mouseInside = NO; [self setNeedsDisplay:YES]; }
+- (void)mouseEntered:(NSEvent *)event {
+    (void)event; self.mouseInside = YES; [self setNeedsDisplay:YES];
+    HoverTableView *table = [self.superview isKindOfClass:HoverTableView.class] ? (HoverTableView *)self.superview : nil;
+    table.hoveredRowView = self;
+    [NSApp sendAction:@selector(hoverTableRow:) to:table.hoverTarget from:table];
+}
+- (void)mouseExited:(NSEvent *)event {
+    (void)event; self.mouseInside = NO; [self setNeedsDisplay:YES];
+    HoverTableView *table = [self.superview isKindOfClass:HoverTableView.class] ? (HoverTableView *)self.superview : nil;
+    if (table.hoveredRowView == self) {
+        table.hoveredRowView = nil;
+        [NSApp sendAction:@selector(hoverTableRow:) to:table.hoverTarget from:table];
+    }
+}
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
     self.mouseInside = NO;
@@ -128,20 +146,95 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 }
 @end
 
-@interface DiskMapView : NSView
+@interface CollectionDropView : NSView
+@property(weak) id actionTarget;
+@property(copy) NSString *droppedPath;
+@property(assign) BOOL hasItems;
+@end
+@implementation CollectionDropView
+- (instancetype)initWithFrame:(NSRect)frame {
+    if ((self = [super initWithFrame:frame])) {
+        [self registerForDraggedTypes:@[DiskMapDragType]];
+
+    }
+    return self;
+}
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    NSPoint center = NSMakePoint(23, NSMidY(self.bounds));
+    NSColor *ringColor = self.hasItems ? [NSColor colorWithRed:0.28 green:0.52 blue:0.84 alpha:1]
+                                      : [NSColor colorWithRed:0.23 green:0.31 blue:0.39 alpha:1];
+    [ringColor setStroke];
+    const CGFloat radii[] = {20.0, 15.5};
+    for (CGFloat radius : radii) {
+        NSBezierPath *ring = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(center.x - radius, center.y - radius, radius * 2, radius * 2)];
+        ring.lineWidth = 1.5;
+        [ring stroke];
+    }
+    [[ringColor colorWithAlphaComponent:0.7] setFill];
+    [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(center.x - 11, center.y - 11, 22, 22)] fill];
+}
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+    return sender.draggingSource && [sender.draggingPasteboard stringForType:DiskMapDragType] ? NSDragOperationCopy : NSDragOperationNone;
+}
+- (BOOL)prepareForDragOperation:(id<NSDraggingInfo>)sender { return [self draggingEntered:sender] != NSDragOperationNone; }
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+    self.droppedPath = [sender.draggingPasteboard stringForType:DiskMapDragType];
+    return [NSApp sendAction:@selector(collectDroppedItem:) to:self.actionTarget from:self];
+}
+@end
+
+@interface DiskMapView : NSView <NSDraggingSource>
 @property(copy) NSArray<NSDictionary *> *items;
 @property(assign) NSInteger selectedIndex;
 @property(strong) NSDictionary *selectedItem;
 @property(strong) NSMutableArray<NSDictionary *> *hitSegments;
 @property(strong) NSDictionary *hoveredItem;
+@property(strong) NSDictionary *tableHoveredItem;
 @property(strong) NSTrackingArea *mapTrackingArea;
 @property(weak) id actionTarget;
 @property(copy) NSString *centerTitle;
 @property(copy) NSString *centerSubtitle;
+@property(assign) double rootBytes;
+@property(strong) NSTimer *mapAnimationTimer;
+@property(strong) NSImage *previousMapImage;
+@property(assign) NSTimeInterval transitionStarted;
+- (void)beginMapTransition;
 @end
 
 @implementation DiskMapView
 - (BOOL)isFlipped { return YES; }
+
+- (void)animationTick:(NSTimer *)timer {
+    (void)timer;
+    if (self.previousMapImage && [NSDate timeIntervalSinceReferenceDate] - self.transitionStarted >= 0.35)
+        self.previousMapImage = nil;
+    [self setNeedsDisplay:YES];
+    if (!self.hoveredItem && !self.tableHoveredItem && !self.previousMapImage) {
+        [self.mapAnimationTimer invalidate];
+        self.mapAnimationTimer = nil;
+    }
+}
+
+- (void)ensureAnimationTimer {
+    if (self.mapAnimationTimer) return;
+    self.mapAnimationTimer = [NSTimer timerWithTimeInterval:1.0 / 30.0 target:self
+        selector:@selector(animationTick:) userInfo:nil repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:self.mapAnimationTimer forMode:NSRunLoopCommonModes];
+}
+
+- (void)beginMapTransition {
+    if (!self.window || self.items.count == 0 || NSIsEmptyRect(self.bounds)) return;
+    self.previousMapImage = nil;
+    NSBitmapImageRep *rep = [self bitmapImageRepForCachingDisplayInRect:self.bounds];
+    if (!rep) return;
+    [self cacheDisplayInRect:self.bounds toBitmapImageRep:rep];
+    NSImage *image = [[NSImage alloc] initWithSize:self.bounds.size];
+    [image addRepresentation:rep];
+    self.previousMapImage = image;
+    self.transitionStarted = [NSDate timeIntervalSinceReferenceDate];
+    [self ensureAnimationTimer];
+}
 
 - (void)updateTrackingAreas {
     [super updateTrackingAreas];
@@ -166,25 +259,34 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 
 - (void)drawItems:(NSArray<NSDictionary *> *)items start:(CGFloat)start sweep:(CGFloat)parentSweep
              depth:(NSInteger)depth center:(NSPoint)center inner:(CGFloat)inner
-         ringWidth:(CGFloat)ringWidth rootHue:(CGFloat)rootHue {
-    if (depth >= 4 || items.count == 0 || parentSweep < 0.35) return;
-    double total = 0;
-    for (NSDictionary *item in items) total += [item[@"physicalBytes"] doubleValue];
+         ringWidth:(CGFloat)ringWidth rootHue:(CGFloat)rootHue total:(double)total
+       highlighted:(BOOL)highlighted {
+    if (depth >= 12 || items.count == 0 || parentSweep < 0.35) return;
     if (total <= 0) return;
     CGFloat angle = start;
     for (NSInteger index = 0; index < (NSInteger)items.count; ++index) {
         NSDictionary *item = items[index];
         CGFloat sweep = parentSweep * [item[@"physicalBytes"] doubleValue] / total;
         if (sweep < 0.18) { angle += sweep; continue; }
-        CGFloat lower = inner + depth * ringWidth;
-        NSBezierPath *wedge = [self wedgeAtCenter:center inner:lower + 1
-                                            outer:lower + ringWidth - 1 start:angle sweep:sweep];
-        CGFloat hue = depth == 0 ? DiskMapPalette[index % 7] : rootHue;
-        CGFloat brightness = MAX(0.50, 0.96 - depth * 0.095);
-        NSColor *fill = [item[@"restricted"] boolValue]
-            ? [NSColor colorWithRed:0.86 green:0.25 blue:0.20 alpha:1]
-            : [NSColor colorWithHue:hue saturation:MAX(0.48, 0.78 - depth * 0.055)
-                          brightness:brightness alpha:1];
+        CGFloat lower = inner + MIN(depth, 4) * ringWidth + MAX(0, depth - 4) * ringWidth * 0.22;
+        CGFloat width = depth < 4 ? ringWidth : ringWidth * 0.22;
+        CGFloat inset = MIN(1.0, width * 0.18);
+        NSBezierPath *wedge = [self wedgeAtCenter:center inner:lower + inset
+                                            outer:lower + width - inset start:angle sweep:sweep];
+        CGFloat hue = depth == 0 ? DiskMapPalette[index % 7] :
+            (depth == 1 ? fmod(rootHue + 0.80 + (CGFloat)index * 0.045, 1.0) : rootHue);
+        CGFloat brightness = MIN(1.0, 0.84 + depth * 0.025);
+        NSColor *fill = [item[@"hiddenSpace"] boolValue]
+            ? [NSColor colorWithRed:0.43 green:0.16 blue:0.48 alpha:1]
+            : ([item[@"restricted"] boolValue]
+                ? [NSColor colorWithWhite:0.45 alpha:1]
+                : [NSColor colorWithHue:hue saturation:MAX(0.48, 0.78 - depth * 0.055)
+                            brightness:brightness alpha:1]);
+        BOOL isHighlighted = highlighted || item == self.tableHoveredItem || item == self.hoveredItem;
+        if (isHighlighted) {
+            CGFloat pulse = 0.05 + 0.45 * (0.5 + 0.5 * sin([NSDate timeIntervalSinceReferenceDate] * 7.0));
+            fill = [fill blendedColorWithFraction:pulse ofColor:NSColor.whiteColor];
+        }
         [fill setFill];
         [wedge fill];
         if ([item isEqual:self.selectedItem] || [item isEqual:self.hoveredItem]) {
@@ -196,7 +298,8 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
         NSArray *children = item[@"children"];
         if ([children isKindOfClass:NSArray.class] && children.count > 0) {
             [self drawItems:children start:angle sweep:sweep depth:depth + 1 center:center
-                       inner:inner ringWidth:ringWidth rootHue:hue];
+                       inner:inner ringWidth:ringWidth rootHue:hue
+                          total:[item[@"physicalBytes"] doubleValue] highlighted:isHighlighted];
         }
         angle += sweep;
     }
@@ -212,10 +315,11 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     CGFloat inner = outer * 0.255;
     double total = 0;
     for (NSDictionary *item in self.items) total += [item[@"physicalBytes"] doubleValue];
+    total = MAX(total, self.rootBytes);
     if (total <= 0) return;
     self.hitSegments = [NSMutableArray array];
-    [self drawItems:self.items start:-90 sweep:360 depth:0 center:center inner:inner
-           ringWidth:(outer - inner) / 4.0 rootHue:0];
+    [self drawItems:self.items start:50 sweep:360 depth:0 center:center inner:inner
+           ringWidth:(outer - inner) / 5.76 rootHue:0 total:total highlighted:NO];
     NSString *title = self.centerTitle.length ? self.centerTitle : @"Disk Map";
     NSString *size = self.centerSubtitle.length ? self.centerSubtitle :
         [NSByteCountFormatter stringFromByteCount:(long long)total countStyle:NSByteCountFormatterCountStyleFile];
@@ -233,6 +337,11 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     NSRect sizeRect = NSMakeRect(center.x - textWidth / 2.0, center.y + 5, textWidth, 18);
     [title drawInRect:titleRect withAttributes:titleAttributes];
     [size drawInRect:sizeRect withAttributes:sizeAttributes];
+    if (self.previousMapImage) {
+        CGFloat progress = MIN(1.0, ([NSDate timeIntervalSinceReferenceDate] - self.transitionStarted) / 0.35);
+        [self.previousMapImage drawInRect:self.bounds fromRect:NSZeroRect
+            operation:NSCompositingOperationSourceOver fraction:1.0 - progress];
+    }
 }
 
 - (void)mouseDown:(NSEvent *)event {
@@ -249,6 +358,21 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     [NSApp sendAction:action to:self.actionTarget from:self];
 }
 
+- (void)mouseDragged:(NSEvent *)event {
+    NSDictionary *item = self.selectedItem;
+    NSString *path = item[@"path"];
+    if (!path.length || [item[@"hiddenSpace"] boolValue]) return;
+    [NSApp sendAction:@selector(prepareMapDrag:) to:self.actionTarget from:self];
+    NSPasteboardItem *pasteboardItem = [NSPasteboardItem new];
+    [pasteboardItem setString:path forType:DiskMapDragType];
+    NSDraggingItem *dragItem = [[NSDraggingItem alloc] initWithPasteboardWriter:pasteboardItem];
+    NSImage *icon = [[NSWorkspace sharedWorkspace] iconForFile:path];
+    [dragItem setDraggingFrame:NSMakeRect([self convertPoint:event.locationInWindow fromView:nil].x - 16, [self convertPoint:event.locationInWindow fromView:nil].y - 16, 32, 32) contents:icon];
+    [self beginDraggingSessionWithItems:@[dragItem] event:event source:self];
+}
+- (NSDragOperation)draggingSession:(NSDraggingSession *)session sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
+    (void)session; return context == NSDraggingContextWithinApplication ? NSDragOperationCopy : NSDragOperationNone;
+}
 - (void)mouseMoved:(NSEvent *)event {
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
     NSDictionary *item = nil;
@@ -260,6 +384,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     }
     if (item == self.hoveredItem) return;
     self.hoveredItem = item;
+    if (item) [self ensureAnimationTimer];
     [self setNeedsDisplay:YES];
     [NSApp sendAction:@selector(hoverMapItem:) to:self.actionTarget from:self];
 }
@@ -490,6 +615,12 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 @property(strong) NSTextField *sidebarSize;
 @property(strong) BreadcrumbView *breadcrumb;
 @property(strong) NSView *statusBar;
+@property(strong) CollectionDropView *collector;
+@property(strong) NSButton *collectorButton;
+@property(strong) NSButton *trashButton;
+@property(strong) NSPopover *collectorPopover;
+@property(strong) NSMutableArray<NSDictionary *> *collectedItems;
+@property(strong) NSDictionary *draggedItem;
 @property(strong) NSTextField *scanStatsLabel;
 @property(copy) NSString *selectedPath;
 @property(copy) NSArray<NSDictionary *> *items;
@@ -769,6 +900,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     [self setupMainMenu];
     self.items = @[];
     self.history = [NSMutableArray array];
+    self.collectedItems = [NSMutableArray array];
     self.forwardHistory = [NSMutableArray array];
     self.missingPaths = [NSMutableSet set];
     NSRect visibleFrame = NSScreen.mainScreen.visibleFrame;
@@ -922,6 +1054,8 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     self.mapView.actionTarget = self;
     self.mapView.translatesAutoresizingMaskIntoConstraints = NO;
     self.table = [[HoverTableView alloc] init];
+    ((HoverTableView *)self.table).hoverTarget = self;
+    [self.table setDraggingSourceOperationMask:NSDragOperationCopy forLocal:YES];
     self.table.dataSource = self;
     self.table.delegate = self;
     self.table.target = self;
@@ -963,11 +1097,35 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     scroll.borderType = NSNoBorder;
     scroll.translatesAutoresizingMaskIntoConstraints = NO;
 
+    self.collector = [[CollectionDropView alloc] initWithFrame:NSZeroRect];
+    self.collector.actionTarget = self;
+    self.collector.translatesAutoresizingMaskIntoConstraints = NO;
+    self.collectorButton = [NSButton buttonWithTitle:@"Trascina qui gli elementi da raccogliere" target:self action:@selector(showCollector:)];
+    self.collectorButton.bordered = NO;
+    self.collectorButton.alignment = NSTextAlignmentLeft;
+    self.collectorButton.font = [NSFont systemFontOfSize:13 weight:NSFontWeightRegular];
+    self.collectorButton.contentTintColor = [NSColor colorWithRed:0.55 green:0.61 blue:0.67 alpha:1];
+    self.collectorButton.translatesAutoresizingMaskIntoConstraints = NO;
+    self.trashButton = [NSButton buttonWithTitle:@"Elimina" target:self action:@selector(trashCollected:)];
+    self.trashButton.contentTintColor = NSColor.systemRedColor;
+    self.trashButton.enabled = NO;
+    self.trashButton.hidden = YES;
+    self.trashButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.collector addSubview:self.collectorButton];
+    [self.collector addSubview:self.trashButton];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.collectorButton.leadingAnchor constraintEqualToAnchor:self.collector.leadingAnchor constant:54],
+        [self.collectorButton.centerYAnchor constraintEqualToAnchor:self.collector.centerYAnchor],
+        [self.collectorButton.trailingAnchor constraintLessThanOrEqualToAnchor:self.trashButton.leadingAnchor constant:-8],
+        [self.trashButton.trailingAnchor constraintEqualToAnchor:self.collector.trailingAnchor constant:-10],
+        [self.trashButton.centerYAnchor constraintEqualToAnchor:self.collector.centerYAnchor]
+    ]];
+
     for (NSView *view in @[self.backButton, self.forwardButton, choose, self.scanButton, self.cancelButton,
                            self.pathLabel, self.sourceSubtitle,
                            self.sidebarTitle, self.sidebarSize,
                            self.progress, self.progressCaption, self.breadcrumb,
-                           self.mapView, scroll, self.statusBar]) [content addSubview:view];
+                           self.mapView, scroll, self.collector, self.statusBar]) [content addSubview:view];
     [NSLayoutConstraint activateConstraints:@[
         [self.backButton.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:104],
         [self.backButton.topAnchor constraintEqualToAnchor:content.topAnchor constant:9],
@@ -1011,7 +1169,11 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
         [self.scanStatsLabel.centerYAnchor constraintEqualToAnchor:self.statusBar.centerYAnchor],
         [self.mapView.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
         [self.mapView.topAnchor constraintEqualToAnchor:choose.bottomAnchor constant:8],
-        [self.mapView.bottomAnchor constraintEqualToAnchor:self.statusBar.topAnchor],
+        [self.mapView.bottomAnchor constraintEqualToAnchor:self.collector.topAnchor constant:-4],
+        [self.collector.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:12],
+        [self.collector.trailingAnchor constraintEqualToAnchor:self.mapView.trailingAnchor constant:-12],
+        [self.collector.bottomAnchor constraintEqualToAnchor:self.statusBar.topAnchor constant:-8],
+        [self.collector.heightAnchor constraintEqualToConstant:42],
         [self.mapView.widthAnchor constraintEqualToAnchor:content.widthAnchor multiplier:0.60],
         [self.sidebarTitle.leadingAnchor constraintEqualToAnchor:self.mapView.trailingAnchor constant:26],
         [self.sidebarTitle.topAnchor constraintEqualToAnchor:self.mapView.topAnchor constant:16],
@@ -1023,7 +1185,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
         [scroll.topAnchor constraintEqualToAnchor:self.sidebarTitle.bottomAnchor constant:10],
         [scroll.bottomAnchor constraintEqualToAnchor:self.statusBar.topAnchor constant:-12]
     ];
-    self.resultViews = @[self.mapView, self.sidebarTitle, self.sidebarSize, scroll, self.statusBar];
+    self.resultViews = @[self.mapView, self.collector, self.sidebarTitle, self.sidebarSize, scroll, self.statusBar];
     for (NSView *view in self.resultViews) {
         view.hidden = YES;
         view.alphaValue = 0;
@@ -1123,15 +1285,17 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 
     unsigned long long total = self.listedItemsTotalBytes;
     unsigned long long cutoff = MAX(1ULL, total / 100ULL);
-    NSInteger firstSmallIndex = self.listedItems.count;
+    BOOL hasHiddenSpace = [self.listedItems.lastObject[@"hiddenSpace"] boolValue];
+    NSInteger ordinaryCount = self.listedItems.count - (hasHiddenSpace ? 1 : 0);
+    NSInteger firstSmallIndex = ordinaryCount;
     unsigned long long collapsedBytes = 0;
-    for (NSInteger index = (NSInteger)self.listedItems.count - 1; index >= 1; --index) {
+    for (NSInteger index = ordinaryCount - 1; index >= 1; --index) {
         unsigned long long itemBytes = [self.listedItems[index][@"physicalBytes"] unsignedLongLongValue];
         if (itemBytes > cutoff - collapsedBytes) break;
         collapsedBytes += itemBytes;
         firstSmallIndex = index;
     }
-    NSInteger smallCount = (NSInteger)self.listedItems.count - firstSmallIndex;
+    NSInteger smallCount = ordinaryCount - firstSmallIndex;
     if (smallCount < 2) {
         self.visibleItems = self.listedItems;
         self.collapsedSmallItems = @[];
@@ -1145,6 +1309,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     NSMutableArray<NSDictionary *> *visible = [[self.listedItems subarrayWithRange:
         NSMakeRange(0, firstSmallIndex)] mutableCopy];
     [visible addObject:summary];
+    if (hasHiddenSpace) [visible addObject:self.listedItems.lastObject];
     self.visibleItems = visible;
 }
 
@@ -1154,6 +1319,10 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
         [self.history addObject:self.currentNode];
         [self.forwardHistory removeAllObjects];
     }
+    if (self.currentNode && self.currentNode != node) [self.mapView beginMapTransition];
+    self.mapView.hoveredItem = nil;
+    self.mapView.tableHoveredItem = nil;
+    ((HoverTableView *)self.table).hoveredRowView = nil;
     self.currentNode = node;
     self.items = node[@"children"] ?: @[];
     self.listedItems = self.items;
@@ -1161,6 +1330,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     self.smallItemsExpanded = NO;
     [self rebuildVisibleItems];
     self.mapView.items = self.items;
+    self.mapView.rootBytes = [node[@"physicalBytes"] doubleValue];
     self.mapView.selectedIndex = NSNotFound;
     self.mapView.selectedItem = nil;
     NSString *displayName = [self displayNameForNode:node];
@@ -1555,6 +1725,132 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     self.statusLabel.stringValue = @"Cancelling…";
     self.scanStatsLabel.stringValue = [self.scanStatsLabel.stringValue stringByAppendingString:@"   •   cancelling"];
     kill(task.processIdentifier, SIGINT);
+}
+
+- (void)hoverTableRow:(HoverTableView *)table {
+    NSInteger row = table.hoveredRowView ? [table rowForView:table.hoveredRowView] : -1;
+    NSDictionary *item = row >= 0 && row < (NSInteger)self.visibleItems.count ? self.visibleItems[row] : nil;
+    self.mapView.tableHoveredItem = [item[@"smallItemsSummary"] boolValue] ? nil : item;
+    if (self.mapView.tableHoveredItem) [self.mapView ensureAnimationTimer];
+    [self.mapView setNeedsDisplay:YES];
+}
+
+- (void)prepareMapDrag:(DiskMapView *)sender { self.draggedItem = sender.selectedItem; }
+
+- (id<NSPasteboardWriting>)tableView:(NSTableView *)tableView pasteboardWriterForRow:(NSInteger)row {
+    (void)tableView;
+    if (row < 0 || row >= (NSInteger)self.visibleItems.count) return nil;
+    NSDictionary *item = self.visibleItems[row];
+    NSString *path = item[@"path"];
+    if (!path.length || [item[@"hiddenSpace"] boolValue] || [item[@"smallItemsSummary"] boolValue]) return nil;
+    self.draggedItem = item;
+    NSPasteboardItem *writer = [NSPasteboardItem new];
+    [writer setString:path forType:DiskMapDragType];
+    return writer;
+}
+
+- (void)updateCollector {
+    unsigned long long total = 0;
+    for (NSDictionary *item in self.collectedItems) total += [item[@"physicalBytes"] unsignedLongLongValue];
+    self.collectorButton.title = self.collectedItems.count
+        ? [NSString stringWithFormat:@"%@ raccolti  •  %lu elementi   ▾",
+            [NSByteCountFormatter stringFromByteCount:(long long)total countStyle:NSByteCountFormatterCountStyleFile],
+            (unsigned long)self.collectedItems.count]
+        : @"Trascina qui gli elementi da raccogliere";
+    self.trashButton.enabled = self.collectedItems.count > 0;
+    self.trashButton.hidden = self.collectedItems.count == 0;
+    self.collector.hasItems = self.collectedItems.count > 0;
+    [self.collector setNeedsDisplay:YES];
+}
+
+- (void)collectDroppedItem:(CollectionDropView *)sender {
+    NSDictionary *item = self.draggedItem;
+    NSString *path = [item[@"path"] stringByStandardizingPath];
+    if (!path.length || ![path isEqualToString:[sender.droppedPath stringByStandardizingPath]] || [path isEqualToString:@"/"]) return;
+    for (NSDictionary *existing in self.collectedItems) {
+        NSString *other = [existing[@"path"] stringByStandardizingPath];
+        if ([path isEqualToString:other] || [path hasPrefix:[other stringByAppendingString:@"/"]] ||
+            [other hasPrefix:[path stringByAppendingString:@"/"]]) {
+            NSBeep();
+            self.statusLabel.stringValue = @"Elemento già raccolto o contenuto in una cartella raccolta";
+            return;
+        }
+    }
+    [self.collectedItems addObject:item];
+    self.draggedItem = nil;
+    [self.collectorPopover close];
+    [self updateCollector];
+}
+
+- (void)removeCollected:(NSButton *)sender {
+    NSInteger index = sender.tag;
+    if (index < 0 || index >= (NSInteger)self.collectedItems.count) return;
+    [self.collectedItems removeObjectAtIndex:index];
+    [self.collectorPopover close];
+    [self updateCollector];
+    if (self.collectedItems.count) [self showCollector:self.collectorButton];
+}
+
+- (void)showCollector:(id)sender {
+    (void)sender;
+    if (!self.collectedItems.count) return;
+    [self.collectorPopover close];
+    NSViewController *controller = [NSViewController new];
+    NSView *container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 440, MIN(300, 38 + self.collectedItems.count * 36))];
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSInsetRect(container.bounds, 8, 8)];
+    scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    scroll.hasVerticalScroller = YES;
+    scroll.drawsBackground = NO;
+    CGFloat height = MAX(NSHeight(scroll.bounds), self.collectedItems.count * 36);
+    NSView *document = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, NSWidth(scroll.bounds), height)];
+    for (NSInteger index = 0; index < (NSInteger)self.collectedItems.count; index++) {
+        NSDictionary *item = self.collectedItems[index];
+        CGFloat y = height - (index + 1) * 36;
+        NSButton *remove = [NSButton buttonWithTitle:@"✕" target:self action:@selector(removeCollected:)];
+        remove.bordered = NO; remove.tag = index; remove.frame = NSMakeRect(2, y + 4, 28, 28);
+        remove.toolTip = @"Rimuovi dalla raccolta";
+        NSTextField *name = [NSTextField labelWithString:item[@"name"] ?: item[@"path"]];
+        name.frame = NSMakeRect(34, y + 9, 245, 20); name.lineBreakMode = NSLineBreakByTruncatingMiddle;
+        name.toolTip = item[@"path"];
+        NSTextField *size = [NSTextField labelWithString:[NSByteCountFormatter stringFromByteCount:[item[@"physicalBytes"] longLongValue] countStyle:NSByteCountFormatterCountStyleFile]];
+        size.alignment = NSTextAlignmentRight; size.frame = NSMakeRect(280, y + 9, 130, 20);
+        [document addSubview:remove]; [document addSubview:name]; [document addSubview:size];
+    }
+    scroll.documentView = document; [container addSubview:scroll]; controller.view = container;
+    self.collectorPopover = [NSPopover new]; self.collectorPopover.behavior = NSPopoverBehaviorTransient;
+    self.collectorPopover.contentViewController = controller;
+    [self.collectorPopover showRelativeToRect:self.collectorButton.bounds ofView:self.collectorButton preferredEdge:NSRectEdgeMaxY];
+}
+
+- (void)trashCollected:(id)sender {
+    (void)sender;
+    if (!self.collectedItems.count) return;
+    [self.collectorPopover close];
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @"Spostare gli elementi nel Cestino?";
+    alert.informativeText = [NSString stringWithFormat:@"%lu elementi saranno spostati nel Cestino. Puoi ripristinarli dal Finder.", (unsigned long)self.collectedItems.count];
+    [alert addButtonWithTitle:@"Sposta nel Cestino"]; [alert addButtonWithTitle:@"Annulla"];
+    [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+        if (response != NSAlertFirstButtonReturn) return;
+        NSMutableArray *failures = [NSMutableArray array];
+        for (NSDictionary *item in [self.collectedItems copy]) {
+            NSString *path = item[@"path"];
+            NSError *error = nil;
+            if ([NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:path] resultingItemURL:nil error:&error]) {
+                [self.collectedItems removeObject:item];
+            } else {
+                [failures addObject:[NSString stringWithFormat:@"%@: %@", item[@"name"] ?: path, error.localizedDescription ?: @"Operazione non riuscita"]];
+            }
+        }
+        [self updateCollector];
+        [self refreshMissingItems];
+        self.statusLabel.stringValue = @"Raccolta aggiornata. Esegui una nuova scansione per aggiornare il grafico.";
+        if (failures.count) {
+            NSAlert *errors = [NSAlert new]; errors.messageText = @"Alcuni elementi non sono stati spostati";
+            errors.informativeText = [failures componentsJoinedByString:@"\n"];
+            [errors beginSheetModalForWindow:self.window completionHandler:nil];
+        }
+    }];
 }
 
 - (void)tableViewSelectionDidChange:(NSNotification *)notification {
