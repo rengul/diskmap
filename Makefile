@@ -21,10 +21,10 @@ ddscan: Scanner.mm
 test: ddscan
 	./ddscan --threads 4 .
 
-ui: ddscan UI.mm Info.plist Version.plist icon-concepts/diskmap-platter.png splash-concepts/diskmap-splash.png Assets.xcassets/AppIcon.appiconset/Contents.json
+ui: ddscan UI.mm UpdateController.mm UpdateController.h Info.plist Version.plist icon-concepts/diskmap-platter.png splash-concepts/diskmap-splash.png Assets.xcassets/AppIcon.appiconset/Contents.json
 	rm -rf "DiskMap.app"
 	mkdir -p "DiskMap.app/Contents/MacOS" "DiskMap.app/Contents/Resources"
-	$(CXX) $(CXXFLAGS) UI.mm $(APP_FRAMEWORKS) -o "DiskMap.app/Contents/MacOS/DiskMap"
+	$(CXX) $(CXXFLAGS) UI.mm UpdateController.mm $(APP_FRAMEWORKS) -o "DiskMap.app/Contents/MacOS/DiskMap"
 	cp ddscan "DiskMap.app/Contents/Resources/ddscan"
 	cp Version.plist "DiskMap.app/Contents/Resources/Version.plist"
 	cp splash-concepts/diskmap-splash.png "DiskMap.app/Contents/Resources/DiskMapSplash.png"

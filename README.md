@@ -140,3 +140,7 @@ hierarchical data model, and a native AppKit map/list browser. It does not yet
 include the privileged XPC helper or snapshot deletion/thinning. Snapshot size
 attribution is experimental because macOS does not publish the observed APFS
 `fsctl` ABI.
+
+### Updates
+
+Disk Map checks for updates at startup. You can also choose **Disk Map → Check for Updates…**. If a compatible version is available, you can download its ZIP archive to Downloads. The app verifies the SHA-256 checksum before saving it; open the archive to install the update.

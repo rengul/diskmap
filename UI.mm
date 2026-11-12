@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import "UpdateController.h"
 #include <fcntl.h>
 #include <signal.h>
 #include <unistd.h>
@@ -592,6 +593,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 @end
 
 @interface AppDelegate : NSObject <NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate>
+@property(strong) UpdateController *updateController;
 @property(strong) NSWindow *window;
 @property(strong) NSWindow *splashWindow;
 @property(strong) NSTextField *pathLabel;
@@ -710,6 +712,11 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     }];
 }
 
+- (void)checkForUpdates:(id)sender {
+    (void)sender;
+    [self.updateController checkForUpdates:YES];
+}
+
 - (void)setupMainMenu {
     NSMenu *mainMenu = [[NSMenu alloc] initWithTitle:@""];
 
@@ -721,6 +728,8 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
                                             keyEquivalent:@""];
     about.target = self;
     [applicationMenu addItem:about];
+    NSMenuItem *updates = [applicationMenu addItemWithTitle:@"Check for Updates…" action:@selector(checkForUpdates:) keyEquivalent:@""];
+    updates.target = self;
     [applicationMenu addItem:NSMenuItem.separatorItem];
     [applicationMenu addItemWithTitle:@"Hide Disk Map" action:@selector(hide:) keyEquivalent:@"h"];
     NSMenuItem *hideOthers = [applicationMenu addItemWithTitle:@"Hide Others"
@@ -897,6 +906,7 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification;
+    self.updateController = [UpdateController new];
     [self setupMainMenu];
     self.items = @[];
     self.history = [NSMutableArray array];
@@ -1202,6 +1212,9 @@ static NSColor *DiskMapRootColor(NSDictionary *item, NSInteger index) {
     [self.window setFrame:compactFrame display:NO];
     [self refreshVolumeIndicatorForPath:self.selectedPath];
     [self showSplashThenMainWindow];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self.updateController checkForUpdates:NO];
+    });
 }
 
 - (void)chooseFolder:(id)sender {
