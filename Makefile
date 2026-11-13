@@ -5,7 +5,7 @@ CXX := clang++
 MACOS_MIN_VERSION := 13.0
 CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -fobjc-arc -mmacosx-version-min=$(MACOS_MIN_VERSION)
 FRAMEWORKS := -framework Foundation
-APP_FRAMEWORKS := -framework AppKit -framework Foundation
+APP_FRAMEWORKS := -framework AppKit -framework Foundation -framework Security
 # The Documents folder can be managed by a File Provider which re-adds Finder
 # metadata to application bundles. Developer ID signing is performed on this
 # clean, local staging copy instead.

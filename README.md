@@ -143,4 +143,4 @@ attribution is experimental because macOS does not publish the observed APFS
 
 ### Updates
 
-Disk Map checks for updates at startup. You can also choose **Disk Map → Check for Updates…**. If a compatible version is available, you can download its ZIP archive to Downloads. The app verifies the SHA-256 checksum before saving it; open the archive to install the update.
+Disk Map checks for updates at startup. You can also choose **Disk Map → Check for Updates…**. If a compatible version is available, you can download and install it. The app shows download progress, verifies the archive and developer signature, then closes, replaces itself, and reopens. The application folder must be writable.
